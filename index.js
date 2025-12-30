@@ -1,11 +1,16 @@
 const express = require("express");
 const app = express();
 
-const VERIFY_TOKEN = "verify_token";
-
 app.use(express.json());
 
-// ✅ Webhook verification (VERY IMPORTANT)
+const VERIFY_TOKEN = "verify_token";
+
+// ✅ Test route (IMPORTANT)
+app.get("/", (req, res) => {
+  res.send("Server is running");
+});
+
+// ✅ Webhook verification (GET)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -25,6 +30,7 @@ app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT, () => {
-  console.log("Server running on Render port");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🚀 Server running on port", PORT);
 });
