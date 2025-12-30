@@ -3,7 +3,7 @@ const app = express();
 
 app.use(express.json());
 
-const VERIFY_TOKEN = "verify_token";
+const VERIFY_TOKEN = "ansh_123";
 
 // ✅ Test route (IMPORTANT)
 app.get("/", (req, res) => {
