@@ -29,10 +29,6 @@ app.post("/webhook", (req, res) => {
   console.log("📩 Message received:", JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
 });
-// 🔥 catch-all route (DEBUG)
-app.get("*", (req, res) => {
-  res.status(200).send("APP IS REACHABLE ✅ " + req.url);
-});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 Server running on port", PORT);
