@@ -4,6 +4,8 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
+const processedMessages = new Set(); // 🔒 duplicate protection
+
 const {
   WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
@@ -17,7 +19,7 @@ const {
 } = process.env;
 
 /* ===============================
-   META WEBHOOK VERIFY (GET)
+   META VERIFY
 ================================ */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -25,37 +27,41 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified ✅");
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
 
 /* ===============================
-   RECEIVE MESSAGE (POST)
+   WEBHOOK POST
 ================================ */
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
+    const message =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message) {
+    if (!message) return res.sendStatus(200);
+
+    const messageId = message.id;
+
+    // 🔒 BLOCK DUPLICATE MESSAGE
+    if (processedMessages.has(messageId)) {
+      console.log("Duplicate message ignored:", messageId);
       return res.sendStatus(200);
     }
 
+    processedMessages.add(messageId);
+
     const from = message.from;
     const text = message.text?.body?.toLowerCase() || "";
-    let reply = REPLY_DEFAULT;
 
+    let reply = REPLY_DEFAULT;
     if (text.includes("hi") || text.includes("hello")) reply = REPLY_HI;
     else if (text.includes("price")) reply = REPLY_PRICE;
     else if (text.includes("demo")) reply = REPLY_DEMO;
     else if (text.includes("help")) reply = REPLY_HELP;
 
-    /* ===== SEND WHATSAPP REPLY ===== */
+    /* SEND WHATSAPP MESSAGE */
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -71,7 +77,7 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-    /* ===== LOG TO GOOGLE SHEET ===== */
+    /* LOG TO GOOGLE SHEET */
     if (GOOGLE_SHEET_WEBHOOK_URL) {
       await axios.post(GOOGLE_SHEET_WEBHOOK_URL, {
         phone: from,
@@ -83,15 +89,15 @@ app.post("/webhook", async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err.message);
+    console.error(err);
     res.sendStatus(500);
   }
 });
 
 /* ===============================
-   SERVER START
+   START SERVER
 ================================ */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} 🚀`);
+  console.log(`Server running on ${PORT}`);
 });
