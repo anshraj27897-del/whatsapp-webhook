@@ -1,12 +1,12 @@
-const express = require("express");
-const axios = require("axios");
+import express from "express";
+import axios from "axios";
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// 🔐 Memory to stop duplicate replies
+// 🚫 duplicate stop memory
 const processedMessages = new Set();
 
 /* ================= VERIFY WEBHOOK ================= */
@@ -16,11 +16,10 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("✅ Webhook Verified");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    console.log("✅ Webhook verified");
+    return res.status(200).send(challenge);
   }
+  res.sendStatus(403);
 });
 
 /* ================= RECEIVE MESSAGE ================= */
@@ -31,31 +30,29 @@ app.post("/webhook", async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message) {
-      return res.sendStatus(200);
-    }
+    if (!message) return res.sendStatus(200);
 
     const msgId = message.id;
 
-    // 🚫 STOP DUPLICATE MESSAGE
+    // 🚫 stop duplicate reply
     if (processedMessages.has(msgId)) {
-      console.log("⚠️ Duplicate ignored:", msgId);
+      console.log("⚠️ Duplicate message ignored");
       return res.sendStatus(200);
     }
     processedMessages.add(msgId);
 
     const from = message.from;
     const text = message.text?.body || "";
-    const name = value?.contacts?.[0]?.profile?.name || "Unknown";
+    const name = value?.contacts?.[0]?.profile?.name || "Friend";
 
-    console.log(`📩 Message from ${from}: ${text}`);
+    console.log(`📩 ${from} -> ${text}`);
 
-    /* ============ AUTO REPLY ============ */
-    const replyText = `👋 Hi ${name}! Welcome to our platform
+    /* ===== AUTO REPLY ===== */
+    const reply = `👋 Hi ${name}! Welcome to our platform
 
 Reply with:
-1️⃣ PRICE – to know pricing
-2️⃣ DEMO – to see demo
+1️⃣ PRICE – pricing details
+2️⃣ DEMO – product demo
 3️⃣ HELP – support`;
 
     await axios.post(
@@ -63,7 +60,7 @@ Reply with:
       {
         messaging_product: "whatsapp",
         to: from,
-        text: { body: replyText },
+        text: { body: reply },
       },
       {
         headers: {
@@ -73,7 +70,7 @@ Reply with:
       }
     );
 
-    /* ============ GOOGLE SHEET LOG ============ */
+    /* ===== GOOGLE SHEET LOG ===== */
     await axios.post(process.env.SHEET_WEBHOOK_URL, {
       name,
       phone: from,
