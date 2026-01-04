@@ -1,99 +1,94 @@
-import express from "express";
-import fetch from "node-fetch";
+const express = require("express");
+const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 
-const {
-  VERIFY_TOKEN,
-  WHATSAPP_TOKEN,
-  PHONE_NUMBER_ID,
-  SHEET_WEBHOOK,
-  REPLY_DEFAULT,
-  REPLY_HI,
-  REPLY_PRICE,
-  REPLY_DEMO,
-  REPLY_HELP,
-} = process.env;
+const PORT = process.env.PORT || 10000;
 
-/* -------------------- VERIFY WEBHOOK -------------------- */
+// 🔐 Memory to stop duplicate replies
+const processedMessages = new Set();
+
+/* ================= VERIFY WEBHOOK ================= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified");
-    return res.status(200).send(challenge);
+  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+    console.log("✅ Webhook Verified");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-  return res.sendStatus(403);
 });
 
-/* -------------------- RECEIVE MESSAGE -------------------- */
+/* ================= RECEIVE MESSAGE ================= */
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
+    const message = value?.messages?.[0];
 
-    // 🔴 VERY IMPORTANT → stop duplicate replies
-    if (!value || !value.messages) {
+    if (!message) {
       return res.sendStatus(200);
     }
 
-    const message = value.messages[0];
+    const msgId = message.id;
+
+    // 🚫 STOP DUPLICATE MESSAGE
+    if (processedMessages.has(msgId)) {
+      console.log("⚠️ Duplicate ignored:", msgId);
+      return res.sendStatus(200);
+    }
+    processedMessages.add(msgId);
+
     const from = message.from;
-    const text = message.text?.body?.toLowerCase() || "";
+    const text = message.text?.body || "";
+    const name = value?.contacts?.[0]?.profile?.name || "Unknown";
 
-    console.log("Message from:", from, "| Text:", text);
+    console.log(`📩 Message from ${from}: ${text}`);
 
-    /* ---------- Decide reply ---------- */
-    let reply = REPLY_DEFAULT;
+    /* ============ AUTO REPLY ============ */
+    const replyText = `👋 Hi ${name}! Welcome to our platform
 
-    if (text.includes("hi") || text.includes("hello")) reply = REPLY_HI;
-    else if (text.includes("price")) reply = REPLY_PRICE;
-    else if (text.includes("demo")) reply = REPLY_DEMO;
-    else if (text.includes("help")) reply = REPLY_HELP;
+Reply with:
+1️⃣ PRICE – to know pricing
+2️⃣ DEMO – to see demo
+3️⃣ HELP – support`;
 
-    /* ---------- Send WhatsApp reply ---------- */
-    await fetch(
-      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+    await axios.post(
+      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
-        method: "POST",
+        messaging_product: "whatsapp",
+        to: from,
+        text: { body: replyText },
+      },
+      {
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: reply },
-        }),
       }
     );
 
-    /* ---------- Save to Google Sheet ---------- */
-    if (SHEET_WEBHOOK) {
-      await fetch(SHEET_WEBHOOK, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          phone: from,
-          message: text,
-          status: "REPLIED",
-        }),
-      });
-    }
+    /* ============ GOOGLE SHEET LOG ============ */
+    await axios.post(process.env.SHEET_WEBHOOK_URL, {
+      name,
+      phone: from,
+      message: text,
+      status: "Received",
+    });
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("❌ Error:", err.response?.data || err.message);
     res.sendStatus(200);
   }
 });
 
-/* -------------------- START SERVER -------------------- */
-const PORT = process.env.PORT || 10000;
+/* ================= START SERVER ================= */
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
