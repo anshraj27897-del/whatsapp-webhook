@@ -7,15 +7,8 @@ app.use(express.json());
 /* ================= ENV ================= */
 const {
   VERIFY_TOKEN,
-  WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
-  GOOGLE_SHEET_WEBHOOK_URL,
-
-  REPLY_HI,
-  REPLY_PRICE,
-  REPLY_DEMO,
-  REPLY_HELP,
-  REPLY_DEFAULT,
+  CLIENTS_SHEET_WEBHOOK_URL, // 👈 clients sheet ka apps script URL
 } = process.env;
 
 /* ================= IN-MEMORY DEDUP ================= */
@@ -34,30 +27,35 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+/* ================= FETCH CLIENT CONFIG ================= */
+async function getClientConfig(phoneNumberId) {
+  const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
+    phone_number_id: phoneNumberId,
+  });
+  return res.data; // sheet se ek row ka data
+}
+
 /* ================= SMART REPLY ENGINE ================= */
-function getReply(text) {
+function getReply(text, cfg) {
   const t = text.toLowerCase();
 
-  // greetings
   if (["hi", "hello", "hey", "hii", "hy"].includes(t)) {
-    return REPLY_HI;
+    return cfg.reply_hi;
   }
 
-  // numeric menu
-  if (t === "1" || t.includes("price") || t.includes("cost")) {
-    return REPLY_PRICE;
+  if (t === "1" || t.includes("price")) {
+    return cfg.reply_price;
   }
 
-  if (t === "2" || t.includes("demo") || t.includes("trial")) {
-    return REPLY_DEMO;
+  if (t === "2" || t.includes("demo")) {
+    return cfg.reply_demo;
   }
 
-  if (t === "3" || t.includes("help") || t.includes("support")) {
-    return REPLY_HELP;
+  if (t === "3" || t.includes("help")) {
+    return cfg.reply_help;
   }
 
-  // fallback
-  return REPLY_DEFAULT;
+  return cfg.reply_default;
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -81,8 +79,16 @@ app.post("/webhook", async (req, res) => {
     }
     global.processedMessages.add(messageId);
 
-    /* ===== DECIDE SMART REPLY ===== */
-    const replyText = getReply(text);
+    /* ===== LOAD CLIENT FROM SHEET ===== */
+    const client = await getClientConfig(PHONE_NUMBER_ID);
+
+    if (!client || !client.whatsapp_token) {
+      console.log("❌ Client not found in sheet");
+      return res.sendStatus(200);
+    }
+
+    /* ===== DECIDE REPLY ===== */
+    const replyText = getReply(text, client);
 
     /* ===== SEND WHATSAPP MESSAGE ===== */
     await axios.post(
@@ -94,15 +100,15 @@ app.post("/webhook", async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${client.whatsapp_token}`,
           "Content-Type": "application/json",
         },
       }
     );
 
-    /* ===== LOG TO GOOGLE SHEET ===== */
-    if (GOOGLE_SHEET_WEBHOOK_URL) {
-      await axios.post(GOOGLE_SHEET_WEBHOOK_URL, {
+    /* ===== LOG TO CLIENT SHEET ===== */
+    if (client.sheet_webhook) {
+      await axios.post(client.sheet_webhook, {
         phone: from,
         message: text,
         reply: replyText,
