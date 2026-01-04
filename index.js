@@ -10,12 +10,16 @@ const {
   WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
   GOOGLE_SHEET_WEBHOOK_URL,
+
   REPLY_HI,
   REPLY_PRICE,
   REPLY_DEMO,
   REPLY_HELP,
   REPLY_DEFAULT,
 } = process.env;
+
+/* ================= IN-MEMORY DEDUP ================= */
+global.processedMessages ??= new Set();
 
 /* ================= META VERIFY ================= */
 app.get("/webhook", (req, res) => {
@@ -24,11 +28,37 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified");
+    console.log("✅ Webhook verified");
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
+
+/* ================= SMART REPLY ENGINE ================= */
+function getReply(text) {
+  const t = text.toLowerCase();
+
+  // greetings
+  if (["hi", "hello", "hey", "hii", "hy"].includes(t)) {
+    return REPLY_HI;
+  }
+
+  // numeric menu
+  if (t === "1" || t.includes("price") || t.includes("cost")) {
+    return REPLY_PRICE;
+  }
+
+  if (t === "2" || t.includes("demo") || t.includes("trial")) {
+    return REPLY_DEMO;
+  }
+
+  if (t === "3" || t.includes("help") || t.includes("support")) {
+    return REPLY_HELP;
+  }
+
+  // fallback
+  return REPLY_DEFAULT;
+}
 
 /* ================= MESSAGE HANDLER ================= */
 app.post("/webhook", async (req, res) => {
@@ -42,30 +72,17 @@ app.post("/webhook", async (req, res) => {
 
     const messageId = message.id;
     const from = message.from;
-    const text =
-      message.text?.body?.trim().toLowerCase() || "unknown";
+    const text = message.text?.body?.trim() || "";
 
     /* ===== DUPLICATE PROTECTION ===== */
-    if (global.processedMessages?.has(messageId)) {
-      console.log("Duplicate message ignored:", messageId);
+    if (global.processedMessages.has(messageId)) {
+      console.log("⏭️ Duplicate ignored:", messageId);
       return res.sendStatus(200);
     }
-
-    global.processedMessages ??= new Set();
     global.processedMessages.add(messageId);
 
-    /* ===== DECIDE REPLY ===== */
-    let replyText = REPLY_DEFAULT;
-
-    if (["hi", "hello", "hey"].includes(text)) {
-      replyText = REPLY_HI;
-    } else if (text === "price") {
-      replyText = REPLY_PRICE;
-    } else if (text === "demo") {
-      replyText = REPLY_DEMO;
-    } else if (text === "help") {
-      replyText = REPLY_HELP;
-    }
+    /* ===== DECIDE SMART REPLY ===== */
+    const replyText = getReply(text);
 
     /* ===== SEND WHATSAPP MESSAGE ===== */
     await axios.post(
@@ -89,13 +106,14 @@ app.post("/webhook", async (req, res) => {
         phone: from,
         message: text,
         reply: replyText,
+        status: "REPLIED",
         timestamp: new Date().toISOString(),
       });
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err.message);
+    console.error("❌ Webhook error:", err.message);
     return res.sendStatus(200);
   }
 });
@@ -103,5 +121,5 @@ app.post("/webhook", async (req, res) => {
 /* ================= SERVER ================= */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
-  console.log(`Server running on port ${PORT}`)
+  console.log(`🚀 Server running on port ${PORT}`)
 );
