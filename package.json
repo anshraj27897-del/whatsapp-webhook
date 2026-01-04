@@ -1,13 +1,16 @@
 {
-  "name": "whatsapp-cloud-platform",
+  "name": "whatsapp-webhook",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^4.18.2",
-    "node-fetch": "^3.3.2"
+    "axios": "^1.6.0"
   }
 }
