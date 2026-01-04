@@ -4,111 +4,96 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-/*
-================================
-ENV VARIABLES (Render me set honi chahiye)
-================================
-WHATSAPP_TOKEN   = Meta access token
-VERIFY_TOKEN     = ansh_123
-PHONE_NUMBER_ID  = 888609434343843
-SHEET_WEBHOOK    = Google Apps Script Web App URL
-================================
-*/
+const {
+  VERIFY_TOKEN,
+  WHATSAPP_TOKEN,
+  PHONE_NUMBER_ID,
+  SHEET_WEBHOOK,
+  REPLY_DEFAULT,
+  REPLY_HI,
+  REPLY_PRICE,
+  REPLY_DEMO,
+  REPLY_HELP,
+} = process.env;
 
-/*
-================================
-VERIFY WEBHOOK (Meta requirement)
-================================
-*/
+/* -------------------- VERIFY WEBHOOK -------------------- */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified");
     return res.status(200).send(challenge);
   }
-
   return res.sendStatus(403);
 });
 
-/*
-================================
-RECEIVE MESSAGE
-================================
-*/
+/* -------------------- RECEIVE MESSAGE -------------------- */
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
 
+    // 🔴 VERY IMPORTANT → stop duplicate replies
     if (!value || !value.messages) {
       return res.sendStatus(200);
     }
 
-    const msg = value.messages[0];
-    const from = msg.from;
-    const text = msg.text?.body || "";
+    const message = value.messages[0];
+    const from = message.from;
+    const text = message.text?.body?.toLowerCase() || "";
 
-    console.log("📩 Message from:", from, "| Text:", text);
+    console.log("Message from:", from, "| Text:", text);
 
-    /*
-    ================================
-    SEND DATA TO GOOGLE SHEET
-    ================================
-    */
-    if (process.env.SHEET_WEBHOOK) {
-      await fetch(process.env.SHEET_WEBHOOK, {
+    /* ---------- Decide reply ---------- */
+    let reply = REPLY_DEFAULT;
+
+    if (text.includes("hi") || text.includes("hello")) reply = REPLY_HI;
+    else if (text.includes("price")) reply = REPLY_PRICE;
+    else if (text.includes("demo")) reply = REPLY_DEMO;
+    else if (text.includes("help")) reply = REPLY_HELP;
+
+    /* ---------- Send WhatsApp reply ---------- */
+    await fetch(
+      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: from,
+          text: { body: reply },
+        }),
+      }
+    );
+
+    /* ---------- Save to Google Sheet ---------- */
+    if (SHEET_WEBHOOK) {
+      await fetch(SHEET_WEBHOOK, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone: from,
           message: text,
-          status: "RECEIVED",
+          status: "REPLIED",
         }),
       });
     }
 
-    /*
-    ================================
-    AUTO REPLY
-    ================================
-    */
-    const reply = {
-      messaging_product: "whatsapp",
-      to: from,
-      text: {
-        body: "Thanks! Message received 👍",
-      },
-    };
-
-    await fetch(
-      `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(reply),
-      }
-    );
-
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Webhook error:", err);
+    console.error("Webhook error:", err);
     res.sendStatus(200);
   }
 });
 
-/*
-================================
-RENDER PORT FIX (MOST IMPORTANT)
-================================
-*/
-const PORT = process.env.PORT || 3000;
+/* -------------------- START SERVER -------------------- */
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("🚀 Server running on port", PORT);
+  console.log("Server running on port", PORT);
 });
