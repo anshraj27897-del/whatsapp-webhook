@@ -4,25 +4,37 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
+const {
+  WHATSAPP_TOKEN,
+  PHONE_NUMBER_ID,
+  VERIFY_TOKEN,
+  GOOGLE_SHEET_WEBHOOK_URL,
+  REPLY_HI,
+  REPLY_PRICE,
+  REPLY_DEMO,
+  REPLY_HELP,
+  REPLY_DEFAULT,
+} = process.env;
 
-// 🚫 duplicate stop memory
-const processedMessages = new Set();
-
-/* ================= VERIFY WEBHOOK ================= */
+/* ===============================
+   META WEBHOOK VERIFY (GET)
+================================ */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Webhook verified ✅");
     return res.status(200).send(challenge);
   }
-  res.sendStatus(403);
+
+  return res.sendStatus(403);
 });
 
-/* ================= RECEIVE MESSAGE ================= */
+/* ===============================
+   RECEIVE MESSAGE (POST)
+================================ */
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -30,33 +42,22 @@ app.post("/webhook", async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return res.sendStatus(200);
-
-    const msgId = message.id;
-
-    // 🚫 stop duplicate reply
-    if (processedMessages.has(msgId)) {
-      console.log("⚠️ Duplicate message ignored");
+    if (!message) {
       return res.sendStatus(200);
     }
-    processedMessages.add(msgId);
 
     const from = message.from;
-    const text = message.text?.body || "";
-    const name = value?.contacts?.[0]?.profile?.name || "Friend";
+    const text = message.text?.body?.toLowerCase() || "";
+    let reply = REPLY_DEFAULT;
 
-    console.log(`📩 ${from} -> ${text}`);
+    if (text.includes("hi") || text.includes("hello")) reply = REPLY_HI;
+    else if (text.includes("price")) reply = REPLY_PRICE;
+    else if (text.includes("demo")) reply = REPLY_DEMO;
+    else if (text.includes("help")) reply = REPLY_HELP;
 
-    /* ===== AUTO REPLY ===== */
-    const reply = `👋 Hi ${name}! Welcome to our platform
-
-Reply with:
-1️⃣ PRICE – pricing details
-2️⃣ DEMO – product demo
-3️⃣ HELP – support`;
-
+    /* ===== SEND WHATSAPP REPLY ===== */
     await axios.post(
-      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
         to: from,
@@ -64,28 +65,33 @@ Reply with:
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
           "Content-Type": "application/json",
         },
       }
     );
 
-    /* ===== GOOGLE SHEET LOG ===== */
-    await axios.post(process.env.SHEET_WEBHOOK_URL, {
-      name,
-      phone: from,
-      message: text,
-      status: "Received",
-    });
+    /* ===== LOG TO GOOGLE SHEET ===== */
+    if (GOOGLE_SHEET_WEBHOOK_URL) {
+      await axios.post(GOOGLE_SHEET_WEBHOOK_URL, {
+        phone: from,
+        message: text,
+        reply,
+        time: new Date().toISOString(),
+      });
+    }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error:", err.response?.data || err.message);
-    res.sendStatus(200);
+    console.error("Webhook error:", err.message);
+    res.sendStatus(500);
   }
 });
 
-/* ================= START SERVER ================= */
+/* ===============================
+   SERVER START
+================================ */
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT} 🚀`);
 });
