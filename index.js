@@ -11,7 +11,11 @@ const {
   CLIENTS_SHEET_WEBHOOK_URL,
 } = process.env;
 
-/* ================= IN-MEMORY DEDUP ================= */
+if (!VERIFY_TOKEN || !PHONE_NUMBER_ID || !CLIENTS_SHEET_WEBHOOK_URL) {
+  console.error("❌ Missing ENV variables");
+}
+
+/* ================= DEDUP ================= */
 global.processedMessages ??= new Set();
 
 /* ================= META VERIFY ================= */
@@ -24,49 +28,42 @@ app.get("/webhook", (req, res) => {
     console.log("✅ Webhook verified");
     return res.status(200).send(challenge);
   }
+
+  console.log("❌ Webhook verification failed");
   return res.sendStatus(403);
 });
 
-/* ================= FETCH CLIENT CONFIG (SAFE) ================= */
+/* ================= FETCH CLIENT ================= */
 async function getClientConfig(phoneNumberId) {
-  try {
-    if (!CLIENTS_SHEET_WEBHOOK_URL) {
-      console.log("⚠️ CLIENTS_SHEET_WEBHOOK_URL missing");
-      return null;
-    }
-
-    const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
-      phone_number_id: phoneNumberId,
-    });
-
-    return res.data || null;
-  } catch (err) {
-    console.log("⚠️ Client sheet fetch failed:", err.message);
-    return null;
-  }
+  const response = await axios.post(
+    CLIENTS_SHEET_WEBHOOK_URL,
+    { phone_number_id: phoneNumberId },
+    { timeout: 10000 }
+  );
+  return response.data;
 }
 
-/* ================= SMART REPLY ENGINE ================= */
+/* ================= REPLY ENGINE ================= */
 function getReply(text, cfg) {
   const t = text.toLowerCase();
 
   if (["hi", "hello", "hey", "hii", "hy"].includes(t)) {
-    return cfg?.reply_hi || "Hi 👋 Welcome!";
+    return cfg.reply_hi;
   }
 
   if (t === "1" || t.includes("price")) {
-    return cfg?.reply_price || "Pricing will be shared soon.";
+    return cfg.reply_price;
   }
 
   if (t === "2" || t.includes("demo")) {
-    return cfg?.reply_demo || "Demo will be shared shortly.";
+    return cfg.reply_demo;
   }
 
   if (t === "3" || t.includes("help")) {
-    return cfg?.reply_help || "Please tell us your issue.";
+    return cfg.reply_help;
   }
 
-  return cfg?.reply_default || "Thanks for contacting us 😊";
+  return cfg.reply_default;
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -83,39 +80,56 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const text = message.text?.body?.trim() || "";
 
-    /* ===== DUPLICATE PROTECTION ===== */
+    /* ===== DUPLICATE CHECK ===== */
     if (global.processedMessages.has(messageId)) {
       console.log("⏭️ Duplicate ignored:", messageId);
       return res.sendStatus(200);
     }
     global.processedMessages.add(messageId);
 
-    /* ===== LOAD CLIENT CONFIG ===== */
+    /* ===== FETCH CLIENT ===== */
     const client = await getClientConfig(PHONE_NUMBER_ID);
+
+    if (!client) {
+      console.error("❌ Client not found in sheet");
+      return res.sendStatus(200);
+    }
+
+    if (!client.whatsapp_token) {
+      console.error("❌ whatsapp_token missing in sheet");
+      return res.sendStatus(200);
+    }
 
     /* ===== DECIDE REPLY ===== */
     const replyText = getReply(text, client);
 
-    /* ===== SEND WHATSAPP MESSAGE ===== */
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: from,
-        text: { body: replyText },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${
-            client?.whatsapp_token || process.env.WHATSAPP_TOKEN
-          }`,
-          "Content-Type": "application/json",
+    /* ===== SEND MESSAGE ===== */
+    try {
+      await axios.post(
+        `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to: from,
+          text: { body: replyText },
         },
-      }
-    );
+        {
+          headers: {
+            Authorization: `Bearer ${client.whatsapp_token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+    } catch (err) {
+      console.error(
+        "❌ WhatsApp API error:",
+        err.response?.status,
+        err.response?.data || err.message
+      );
+      return res.sendStatus(200);
+    }
 
-    /* ===== LOG TO CLIENT SHEET (OPTIONAL) ===== */
-    if (client?.sheet_webhook) {
+    /* ===== LOG TO SHEET ===== */
+    if (client.sheet_webhook) {
       try {
         await axios.post(client.sheet_webhook, {
           phone: from,
@@ -125,13 +139,13 @@ app.post("/webhook", async (req, res) => {
           timestamp: new Date().toISOString(),
         });
       } catch (e) {
-        console.log("⚠️ Sheet log failed");
+        console.warn("⚠️ Log sheet failed:", e.message);
       }
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Webhook error:", err.message);
+    console.error("❌ Webhook crash:", err.message);
     return res.sendStatus(200);
   }
 });
