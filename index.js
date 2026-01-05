@@ -8,7 +8,7 @@ app.use(express.json());
 const {
   VERIFY_TOKEN,
   PHONE_NUMBER_ID,
-  CLIENTS_SHEET_WEBHOOK_URL, // 👈 clients sheet ka apps script URL
+  CLIENTS_SHEET_WEBHOOK_URL,
 } = process.env;
 
 /* ================= IN-MEMORY DEDUP ================= */
@@ -27,12 +27,23 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-/* ================= FETCH CLIENT CONFIG ================= */
+/* ================= FETCH CLIENT CONFIG (SAFE) ================= */
 async function getClientConfig(phoneNumberId) {
-  const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
-    phone_number_id: phoneNumberId,
-  });
-  return res.data; // sheet se ek row ka data
+  try {
+    if (!CLIENTS_SHEET_WEBHOOK_URL) {
+      console.log("⚠️ CLIENTS_SHEET_WEBHOOK_URL missing");
+      return null;
+    }
+
+    const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
+      phone_number_id: phoneNumberId,
+    });
+
+    return res.data || null;
+  } catch (err) {
+    console.log("⚠️ Client sheet fetch failed:", err.message);
+    return null;
+  }
 }
 
 /* ================= SMART REPLY ENGINE ================= */
@@ -40,22 +51,22 @@ function getReply(text, cfg) {
   const t = text.toLowerCase();
 
   if (["hi", "hello", "hey", "hii", "hy"].includes(t)) {
-    return cfg.reply_hi;
+    return cfg?.reply_hi || "Hi 👋 Welcome!";
   }
 
   if (t === "1" || t.includes("price")) {
-    return cfg.reply_price;
+    return cfg?.reply_price || "Pricing will be shared soon.";
   }
 
   if (t === "2" || t.includes("demo")) {
-    return cfg.reply_demo;
+    return cfg?.reply_demo || "Demo will be shared shortly.";
   }
 
   if (t === "3" || t.includes("help")) {
-    return cfg.reply_help;
+    return cfg?.reply_help || "Please tell us your issue.";
   }
 
-  return cfg.reply_default;
+  return cfg?.reply_default || "Thanks for contacting us 😊";
 }
 
 /* ================= MESSAGE HANDLER ================= */
@@ -79,13 +90,8 @@ app.post("/webhook", async (req, res) => {
     }
     global.processedMessages.add(messageId);
 
-    /* ===== LOAD CLIENT FROM SHEET ===== */
+    /* ===== LOAD CLIENT CONFIG ===== */
     const client = await getClientConfig(PHONE_NUMBER_ID);
-
-    if (!client || !client.whatsapp_token) {
-      console.log("❌ Client not found in sheet");
-      return res.sendStatus(200);
-    }
 
     /* ===== DECIDE REPLY ===== */
     const replyText = getReply(text, client);
@@ -100,21 +106,27 @@ app.post("/webhook", async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${client.whatsapp_token}`,
+          Authorization: `Bearer ${
+            client?.whatsapp_token || process.env.WHATSAPP_TOKEN
+          }`,
           "Content-Type": "application/json",
         },
       }
     );
 
-    /* ===== LOG TO CLIENT SHEET ===== */
-    if (client.sheet_webhook) {
-      await axios.post(client.sheet_webhook, {
-        phone: from,
-        message: text,
-        reply: replyText,
-        status: "REPLIED",
-        timestamp: new Date().toISOString(),
-      });
+    /* ===== LOG TO CLIENT SHEET (OPTIONAL) ===== */
+    if (client?.sheet_webhook) {
+      try {
+        await axios.post(client.sheet_webhook, {
+          phone: from,
+          message: text,
+          reply: replyText,
+          status: "REPLIED",
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        console.log("⚠️ Sheet log failed");
+      }
     }
 
     return res.sendStatus(200);
