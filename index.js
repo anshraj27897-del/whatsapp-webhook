@@ -7,8 +7,8 @@ app.use(express.json());
 /* ================= ENV ================= */
 const {
   VERIFY_TOKEN,
-  PHONE_NUMBER_ID,
-  CLIENTS_SHEET_WEBHOOK_URL,
+  PHONE_NUMBER_ID,              // Meta phone_number_id (ENV only)
+  CLIENTS_SHEET_WEBHOOK_URL,    // Apps Script / Sheet webhook
 } = process.env;
 
 if (!VERIFY_TOKEN || !PHONE_NUMBER_ID || !CLIENTS_SHEET_WEBHOOK_URL) {
@@ -33,19 +33,26 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-/* ================= FETCH CLIENT ================= */
-async function getClientConfig(phoneNumberId) {
+/* ================= FETCH CLIENT FROM SHEET ================= */
+/*
+  Sheet columns expected:
+  phone_number | client_name | whatsapp_token | sheet_webhook | reply_hi | reply_price | reply_demo | reply_default | reply_help
+*/
+async function getClientConfig() {
   const response = await axios.post(
     CLIENTS_SHEET_WEBHOOK_URL,
-    { phone_number_id: phoneNumberId },
+    {
+      phone_number_id: PHONE_NUMBER_ID, // backend identity
+    },
     { timeout: 10000 }
   );
+
   return response.data;
 }
 
 /* ================= REPLY ENGINE ================= */
 function getReply(text, cfg) {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().trim();
 
   if (["hi", "hello", "hey", "hii", "hy"].includes(t)) {
     return cfg.reply_hi;
@@ -59,7 +66,7 @@ function getReply(text, cfg) {
     return cfg.reply_demo;
   }
 
-  if (t === "3" || t.includes("help")) {
+  if (t === "3" || t.includes("help") || t.includes("support")) {
     return cfg.reply_help;
   }
 
@@ -77,8 +84,8 @@ app.post("/webhook", async (req, res) => {
     if (!message) return res.sendStatus(200);
 
     const messageId = message.id;
-    const from = message.from;
-    const text = message.text?.body?.trim() || "";
+    const from = message.from; // user number
+    const text = message.text?.body || "";
 
     /* ===== DUPLICATE CHECK ===== */
     if (global.processedMessages.has(messageId)) {
@@ -87,8 +94,8 @@ app.post("/webhook", async (req, res) => {
     }
     global.processedMessages.add(messageId);
 
-    /* ===== FETCH CLIENT ===== */
-    const client = await getClientConfig(PHONE_NUMBER_ID);
+    /* ===== FETCH CLIENT CONFIG ===== */
+    const client = await getClientConfig();
 
     if (!client) {
       console.error("❌ Client not found in sheet");
@@ -104,31 +111,22 @@ app.post("/webhook", async (req, res) => {
     const replyText = getReply(text, client);
 
     /* ===== SEND MESSAGE ===== */
-    try {
-      await axios.post(
-        `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-        {
-          messaging_product: "whatsapp",
-          to: from,
-          text: { body: replyText },
+    await axios.post(
+      `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: from,
+        text: { body: replyText },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${client.whatsapp_token}`,
+          "Content-Type": "application/json",
         },
-        {
-          headers: {
-            Authorization: `Bearer ${client.whatsapp_token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-    } catch (err) {
-      console.error(
-        "❌ WhatsApp API error:",
-        err.response?.status,
-        err.response?.data || err.message
-      );
-      return res.sendStatus(200);
-    }
+      }
+    );
 
-    /* ===== LOG TO SHEET ===== */
+    /* ===== OPTIONAL LOG TO CLIENT SHEET ===== */
     if (client.sheet_webhook) {
       try {
         await axios.post(client.sheet_webhook, {
