@@ -9,11 +9,11 @@ const {
   VERIFY_TOKEN,
   PHONE_NUMBER_ID,                 // Meta phone_number_id (ENV)
   CLIENTS_SHEET_WEBHOOK_URL,       // Clients master sheet webhook
-  ADMIN_LEADS_WEBHOOK_URL          // 🔔 ADMIN_MASTER_LEADS webhook (NEW)
+  ADMIN_LEADS_WEBHOOK_URL          // ADMIN_MASTER_LEADS webhook
 } = process.env;
 
 if (!VERIFY_TOKEN || !PHONE_NUMBER_ID || !CLIENTS_SHEET_WEBHOOK_URL) {
-  console.error("❌ Missing ENV variables");
+  console.error("❌ Missing required ENV variables");
 }
 
 /* ================= DEDUP ================= */
@@ -36,7 +36,8 @@ app.get("/webhook", (req, res) => {
 /* ================= FETCH CLIENT CONFIG ================= */
 /*
 Expected columns in Clients sheet:
-phone_number_id | client_name | whatsapp_token | sheet_webhook | reply_hi | reply_price | reply_demo | reply_help | reply_default
+phone_number_id | client_name | whatsapp_token | sheet_webhook
+reply_hi | reply_price | reply_demo | reply_help | reply_default
 */
 async function getClientConfig() {
   const res = await axios.post(
@@ -44,7 +45,6 @@ async function getClientConfig() {
     { phone_number_id: PHONE_NUMBER_ID },
     { timeout: 10000 }
   );
-
   return res.data;
 }
 
@@ -68,11 +68,12 @@ app.post("/webhook", async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return res.sendStatus(200);
+    // Ignore non-message events (delivery, seen, etc.)
+    if (!message || !message.text) return res.sendStatus(200);
 
     const messageId = message.id;
     const from = message.from;
-    const text = message.text?.body || "";
+    const text = message.text.body;
 
     /* ===== DUPLICATE CHECK ===== */
     if (global.processedMessages.has(messageId)) {
@@ -103,20 +104,19 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-    /* ================= CLIENT LOG ================= */
+    /* ================= CLIENT SHEET LOG ================= */
     if (client.sheet_webhook) {
       axios.post(client.sheet_webhook, {
-        timestamp: new Date().toISOString(),
         user_phone: from,
         user_message: text,
-        bot_reply: replyText
+        bot_reply: replyText,
+        timestamp: new Date().toISOString()
       }).catch(() => {});
     }
 
     /* ================= ADMIN MASTER LEADS LOG ================= */
     if (ADMIN_LEADS_WEBHOOK_URL) {
       axios.post(ADMIN_LEADS_WEBHOOK_URL, {
-        timestamp: new Date().toISOString(),
         client_phone_number_id: PHONE_NUMBER_ID,
         user_phone: from,
         user_message: text,
@@ -134,5 +134,5 @@ app.post("/webhook", async (req, res) => {
 /* ================= SERVER ================= */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
