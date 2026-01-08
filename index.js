@@ -13,7 +13,7 @@ const {
 } = process.env;
 
 /* ================= DEDUP ================= */
-global.processedMessages ??= new Set();
+const processedMessages = new Set();
 
 /* ================= META VERIFY ================= */
 app.get("/webhook", (req, res) => {
@@ -30,7 +30,6 @@ app.get("/webhook", (req, res) => {
 
 /* ================= FETCH CLIENT CONFIG ================= */
 async function getClientConfig() {
-  console.log("📄 Fetching client config from sheet...");
   const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
     phone_number_id: PHONE_NUMBER_ID
   });
@@ -51,51 +50,45 @@ function getReply(text, cfg) {
 
 /* ================= MESSAGE HANDLER ================= */
 app.post("/webhook", async (req, res) => {
-  console.log("🔥 WEBHOOK HIT");
-  console.log(JSON.stringify(req.body));
-
   try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message || !message.text) {
-      console.log("⚠️ No user message, skipping");
+    if (!message?.text?.body) {
       return res.sendStatus(200);
     }
 
     const messageId = message.id;
-    const from = message.from;
-    const text = message.text.body;
+    const userPhone = message.from;
+    const userText = message.text.body;
 
-    console.log("📩 Incoming message:", from, text);
-
-    /* ===== DUPLICATE CHECK ===== */
-    if (global.processedMessages.has(messageId)) {
-      console.log("🔁 Duplicate message ignored");
+    if (processedMessages.has(messageId)) {
+      console.log("🔁 Duplicate ignored");
       return res.sendStatus(200);
     }
-    global.processedMessages.add(messageId);
+    processedMessages.add(messageId);
 
-    /* ===== FETCH CLIENT CONFIG ===== */
+    console.log("📩 Incoming:", userPhone, userText);
+
+    /* ===== CLIENT CONFIG ===== */
     const client = await getClientConfig();
-    if (!client || !client.whatsapp_token) {
+    if (!client?.whatsapp_token) {
       console.log("❌ Client config missing");
       return res.sendStatus(200);
     }
 
     /* ===== DECIDE REPLY ===== */
-    const replyText = getReply(text, client);
-    console.log("🤖 Reply decided:", replyText);
+    const botReply = getReply(userText, client);
 
     /* ===== SEND WHATSAPP MESSAGE ===== */
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
-        to: from,
-        text: { body: replyText }
+        to: userPhone,
+        text: { body: botReply }
       },
       {
         headers: {
@@ -107,25 +100,23 @@ app.post("/webhook", async (req, res) => {
 
     console.log("✅ WhatsApp reply sent");
 
-    /* ================= CLIENT SHEET LOG ================= */
+    /* ===== CLIENT SHEET LOG ===== */
     if (client.sheet_webhook) {
       await axios.post(client.sheet_webhook, {
-        timestamp: new Date().toISOString(),
-        user_phone: from,
-        user_message: text,
-        bot_reply: replyText
+        user_phone: userPhone,
+        user_message: userText,
+        bot_reply: botReply
       });
       console.log("📊 Client sheet logged");
     }
 
-    /* ================= ADMIN MASTER LEADS LOG ================= */
+    /* ===== ADMIN MASTER LOG ===== */
     if (ADMIN_LEADS_WEBHOOK_URL) {
       await axios.post(ADMIN_LEADS_WEBHOOK_URL, {
-        timestamp: new Date().toISOString(),
         client_phone_number_id: PHONE_NUMBER_ID,
-        user_phone: from,
-        user_message: text,
-        bot_reply: replyText
+        user_phone: userPhone,
+        user_message: userText,
+        bot_reply: botReply
       });
       console.log("🔔 Admin lead logged");
     }
