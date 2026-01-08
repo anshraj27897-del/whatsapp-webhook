@@ -41,7 +41,7 @@ async function getClientConfig() {
 /* ================= BOT REPLY ================= */
 
 function getReply(text, cfg) {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().trim();
 
   if (["hi", "hello", "hey", "hii"].includes(t)) return cfg.reply_hi;
   if (t.includes("price") || t === "1") return cfg.reply_price;
@@ -72,7 +72,8 @@ app.post("/webhook", async (req, res) => {
 
     const messageId = msg.id;
     const userPhone = msg.from;
-    const userText = msg.text.body;
+    const userText = msg.text.body.trim();
+    const lowerText = userText.toLowerCase();
 
     if (processedMessages.has(messageId)) return res.sendStatus(200);
     processedMessages.add(messageId);
@@ -106,18 +107,28 @@ app.post("/webhook", async (req, res) => {
       });
     }
 
-    /* ===== ADMIN SMART RULE ===== */
+    /* ================= ADMIN SMART LOGIC ================= */
 
     let sendToAdmin = false;
+    const isGreeting = ["hi", "hello", "hey", "hii"].includes(lowerText);
 
-    // Rule 1: first time number
+    // Rule 1: New number → only first time
     if (!adminLoggedNumbers.has(userPhone)) {
       sendToAdmin = true;
       adminLoggedNumbers.add(userPhone);
     }
 
-    // Rule 2: intent based (always important)
+    // Rule 2: Pricing / Demo / Support → ALWAYS
     if (["Pricing", "Demo", "Support"].includes(leadReason)) {
+      sendToAdmin = true;
+    }
+
+    // Rule 3: Default but meaningful (out of context)
+    if (
+      leadReason === "General" &&
+      !isGreeting &&
+      userText.length > 3
+    ) {
       sendToAdmin = true;
     }
 
