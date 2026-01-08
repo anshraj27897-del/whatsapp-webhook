@@ -7,13 +7,16 @@ app.use(express.json());
 /* ================= ENV ================= */
 const {
   VERIFY_TOKEN,
-  PHONE_NUMBER_ID,
-  CLIENTS_SHEET_WEBHOOK_URL,
-  ADMIN_LEADS_WEBHOOK_URL
+  PHONE_NUMBER_ID,                 // Meta phone_number_id
+  CLIENTS_SHEET_WEBHOOK_URL,       // Clients master sheet (fetch config)
+  ADMIN_LEADS_WEBHOOK_URL          // Admin master leads sheet
 } = process.env;
 
-/* ================= DEDUP ================= */
-const processedMessages = new Set();
+/* ================= IN-MEMORY STATE ================= */
+// message dedup
+global.processedMessages ??= new Set();
+// first-time user check
+global.seenUsers ??= new Set();
 
 /* ================= META VERIFY ================= */
 app.get("/webhook", (req, res) => {
@@ -22,7 +25,6 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
@@ -30,65 +32,83 @@ app.get("/webhook", (req, res) => {
 
 /* ================= FETCH CLIENT CONFIG ================= */
 async function getClientConfig() {
-  const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
-    phone_number_id: PHONE_NUMBER_ID
-  });
+  const res = await axios.post(
+    CLIENTS_SHEET_WEBHOOK_URL,
+    { phone_number_id: PHONE_NUMBER_ID },
+    { timeout: 10000 }
+  );
   return res.data;
 }
 
-/* ================= REPLY ENGINE ================= */
+/* ================= SMART REPLY ================= */
 function getReply(text, cfg) {
   const t = text.toLowerCase().trim();
 
   if (["hi", "hello", "hey", "hii", "hy"].includes(t)) return cfg.reply_hi;
-  if (t === "1" || t.includes("price")) return cfg.reply_price;
-  if (t === "2" || t.includes("demo")) return cfg.reply_demo;
+  if (t === "1" || t.includes("price") || t.includes("cost")) return cfg.reply_price;
+  if (t === "2" || t.includes("demo") || t.includes("trial")) return cfg.reply_demo;
   if (t === "3" || t.includes("help") || t.includes("support")) return cfg.reply_help;
 
   return cfg.reply_default;
 }
 
+/* ================= ADMIN LEAD DETECTION ================= */
+function detectLead(text, from) {
+  const t = text.toLowerCase().trim();
+
+  // Rule 1: First time user
+  if (!global.seenUsers.has(from)) {
+    return "FIRST_MESSAGE";
+  }
+
+  // Rule 2: Keywords
+  if (
+    t.includes("price") ||
+    t.includes("cost") ||
+    t.includes("buy") ||
+    t.includes("interested") ||
+    t.includes("plan")
+  ) {
+    return "PRICE_KEYWORD";
+  }
+
+  // Rule 3: Menu
+  if (t === "1") return "MENU_PRICE";
+  if (t === "2") return "MENU_DEMO";
+
+  return null;
+}
+
 /* ================= MESSAGE HANDLER ================= */
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
-
-    if (!message?.text?.body) {
-      return res.sendStatus(200);
-    }
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!message || !message.text) return res.sendStatus(200);
 
     const messageId = message.id;
-    const userPhone = message.from;
-    const userText = message.text.body;
+    const from = message.from;
+    const text = message.text.body;
 
-    if (processedMessages.has(messageId)) {
-      console.log("🔁 Duplicate ignored");
+    /* ===== DEDUP ===== */
+    if (global.processedMessages.has(messageId)) {
       return res.sendStatus(200);
     }
-    processedMessages.add(messageId);
+    global.processedMessages.add(messageId);
 
-    console.log("📩 Incoming:", userPhone, userText);
-
-    /* ===== CLIENT CONFIG ===== */
+    /* ===== FETCH CLIENT ===== */
     const client = await getClientConfig();
-    if (!client?.whatsapp_token) {
-      console.log("❌ Client config missing");
-      return res.sendStatus(200);
-    }
+    if (!client || !client.whatsapp_token) return res.sendStatus(200);
 
-    /* ===== DECIDE REPLY ===== */
-    const botReply = getReply(userText, client);
+    /* ===== SMART REPLY ===== */
+    const replyText = getReply(text, client);
 
     /* ===== SEND WHATSAPP MESSAGE ===== */
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
-        to: userPhone,
-        text: { body: botReply }
+        to: from,
+        text: { body: replyText }
       },
       {
         headers: {
@@ -98,28 +118,32 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-    console.log("✅ WhatsApp reply sent");
-
-    /* ===== CLIENT SHEET LOG ===== */
+    /* ===== CLIENT LOG ===== */
     if (client.sheet_webhook) {
-      await axios.post(client.sheet_webhook, {
-        user_phone: userPhone,
-        user_message: userText,
-        bot_reply: botReply
-      });
-      console.log("📊 Client sheet logged");
+      axios.post(client.sheet_webhook, {
+        timestamp: new Date().toISOString(),
+        user_phone: from,
+        user_message: text,
+        bot_reply: replyText
+      }).catch(() => {});
     }
 
-    /* ===== ADMIN MASTER LOG ===== */
-    if (ADMIN_LEADS_WEBHOOK_URL) {
-      await axios.post(ADMIN_LEADS_WEBHOOK_URL, {
+    /* ===== ADMIN SMART ALERT ===== */
+    const leadReason = detectLead(text, from);
+
+    if (leadReason && ADMIN_LEADS_WEBHOOK_URL) {
+      axios.post(ADMIN_LEADS_WEBHOOK_URL, {
+        timestamp: new Date().toISOString(),
         client_phone_number_id: PHONE_NUMBER_ID,
-        user_phone: userPhone,
-        user_message: userText,
-        bot_reply: botReply
-      });
-      console.log("🔔 Admin lead logged");
+        user_phone: from,
+        user_message: text,
+        bot_reply: replyText,
+        lead_reason: leadReason
+      }).catch(() => {});
     }
+
+    // mark user as seen
+    global.seenUsers.add(from);
 
     return res.sendStatus(200);
   } catch (err) {
