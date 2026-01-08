@@ -23,18 +23,24 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
+  console.log("🔎 VERIFY HIT");
+
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ VERIFY SUCCESS");
     return res.status(200).send(challenge);
   }
+  console.log("❌ VERIFY FAILED");
   return res.sendStatus(403);
 });
 
 /* ================= CLIENT CONFIG ================= */
 
 async function getClientConfig() {
+  console.log("📄 Fetching client config...");
   const res = await axios.post(CLIENTS_SHEET_WEBHOOK_URL, {
     phone_number_id: PHONE_NUMBER_ID
   });
+  console.log("✅ Client config loaded");
   return res.data;
 }
 
@@ -67,15 +73,25 @@ function getLeadReason(text) {
 
 app.post("/webhook", async (req, res) => {
   try {
+    console.log("📩 WEBHOOK HIT");
+
     const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg?.text?.body) return res.sendStatus(200);
+    if (!msg?.text?.body) {
+      console.log("⚠️ No text message");
+      return res.sendStatus(200);
+    }
 
     const messageId = msg.id;
     const userPhone = msg.from;
     const userText = msg.text.body.trim();
-    const lowerText = userText.toLowerCase();
 
-    if (processedMessages.has(messageId)) return res.sendStatus(200);
+    console.log("👤 From:", userPhone);
+    console.log("💬 Message:", userText);
+
+    if (processedMessages.has(messageId)) {
+      console.log("♻️ Duplicate message ignored");
+      return res.sendStatus(200);
+    }
     processedMessages.add(messageId);
 
     const client = await getClientConfig();
@@ -98,6 +114,8 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
+    console.log("📤 Reply sent");
+
     /* ===== CLIENT LOG ===== */
     if (client.sheet_webhook) {
       await axios.post(client.sheet_webhook, {
@@ -105,31 +123,28 @@ app.post("/webhook", async (req, res) => {
         user_message: userText,
         bot_reply: botReply
       });
+      console.log("🧾 Client sheet logged");
     }
 
-    /* ================= ADMIN SMART LOGIC ================= */
+    /* ===== ADMIN SMART LOGIC ===== */
 
     let sendToAdmin = false;
-    const isGreeting = ["hi", "hello", "hey", "hii"].includes(lowerText);
+    const isGreeting = ["hi", "hello", "hey", "hii"].includes(userText.toLowerCase());
 
-    // Rule 1: New number → only first time
     if (!adminLoggedNumbers.has(userPhone)) {
       sendToAdmin = true;
       adminLoggedNumbers.add(userPhone);
+      console.log("🆕 New number → admin alert");
     }
 
-    // Rule 2: Pricing / Demo / Support → ALWAYS
     if (["Pricing", "Demo", "Support"].includes(leadReason)) {
       sendToAdmin = true;
+      console.log("🎯 Intent based alert:", leadReason);
     }
 
-    // Rule 3: Default but meaningful (out of context)
-    if (
-      leadReason === "General" &&
-      !isGreeting &&
-      userText.length > 3
-    ) {
+    if (leadReason === "General" && !isGreeting && userText.length > 3) {
       sendToAdmin = true;
+      console.log("🧠 Context alert");
     }
 
     if (sendToAdmin && ADMIN_LEADS_WEBHOOK_URL) {
@@ -141,15 +156,16 @@ app.post("/webhook", async (req, res) => {
         bot_reply: botReply,
         lead_reason: leadReason
       });
+      console.log("🚨 Admin webhook sent");
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error:", err.message);
+    console.error("❌ ERROR:", err.message);
     return res.sendStatus(200);
   }
 });
 
 app.listen(process.env.PORT || 10000, () =>
-  console.log("🚀 Server Live")
+  console.log("🚀 Server Live & Listening")
 );
