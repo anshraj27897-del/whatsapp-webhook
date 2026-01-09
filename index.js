@@ -29,6 +29,7 @@ app.get("/webhook", (req, res) => {
     console.log("✅ VERIFY SUCCESS");
     return res.status(200).send(challenge);
   }
+
   console.log("❌ VERIFY FAILED");
   return res.sendStatus(403);
 });
@@ -50,9 +51,9 @@ function getReply(text, cfg) {
   const t = text.toLowerCase().trim();
 
   if (["hi", "hello", "hey", "hii"].includes(t)) return cfg.reply_hi;
-  if (t.includes("price") || t === "1") return cfg.reply_price;
-  if (t.includes("demo") || t === "2") return cfg.reply_demo;
-  if (t.includes("help") || t.includes("support") || t === "3") return cfg.reply_help;
+  if (t === "1" || t.includes("price")) return cfg.reply_price;
+  if (t === "2" || t.includes("demo")) return cfg.reply_demo;
+  if (t === "3" || t.includes("help") || t.includes("support")) return cfg.reply_help;
 
   return cfg.reply_default;
 }
@@ -89,7 +90,7 @@ app.post("/webhook", async (req, res) => {
     console.log("💬 Message:", userText);
 
     if (processedMessages.has(messageId)) {
-      console.log("♻️ Duplicate message ignored");
+      console.log("♻️ Duplicate ignored");
       return res.sendStatus(200);
     }
     processedMessages.add(messageId);
@@ -98,7 +99,8 @@ app.post("/webhook", async (req, res) => {
     const botReply = getReply(userText, client);
     const leadReason = getLeadReason(userText);
 
-    /* ===== SEND WHATSAPP ===== */
+    /* ===== SEND WHATSAPP REPLY ===== */
+
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -116,9 +118,11 @@ app.post("/webhook", async (req, res) => {
 
     console.log("📤 Reply sent");
 
-    /* ===== CLIENT LOG ===== */
+    /* ===== CLIENT SHEET LOG ===== */
+
     if (client.sheet_webhook) {
       await axios.post(client.sheet_webhook, {
+        timestamp: new Date().toISOString(),
         user_phone: userPhone,
         user_message: userText,
         bot_reply: botReply
@@ -131,32 +135,54 @@ app.post("/webhook", async (req, res) => {
     let sendToAdmin = false;
     const isGreeting = ["hi", "hello", "hey", "hii"].includes(userText.toLowerCase());
 
+    // Rule 1: First time number → once only
     if (!adminLoggedNumbers.has(userPhone)) {
-      sendToAdmin = true;
       adminLoggedNumbers.add(userPhone);
-      console.log("🆕 New number → admin alert");
+      sendToAdmin = true;
+      console.log("🆕 First time number → admin alert");
     }
 
+    // Rule 2: High intent → always
     if (["Pricing", "Demo", "Support"].includes(leadReason)) {
       sendToAdmin = true;
-      console.log("🎯 Intent based alert:", leadReason);
+      console.log("🎯 Intent alert:", leadReason);
     }
 
+    // Rule 3: Context message (non-hi, meaningful)
     if (leadReason === "General" && !isGreeting && userText.length > 3) {
       sendToAdmin = true;
       console.log("🧠 Context alert");
     }
 
+    /* ===== ADMIN ALERT (WHATSAPP + EMAIL) ===== */
+
     if (sendToAdmin && ADMIN_LEADS_WEBHOOK_URL) {
+      const adminMessage = `
+🔔 NEW WHATSAPP LEAD
+
+📞 User Number: +${userPhone}
+📲 Bot Number ID: ${PHONE_NUMBER_ID}
+
+💬 User Message:
+${userText}
+
+🤖 Bot Reply:
+${botReply}
+
+🎯 Lead Type: ${leadReason}
+🕒 Time: ${new Date().toLocaleString("en-IN")}
+`;
+
       await axios.post(ADMIN_LEADS_WEBHOOK_URL, {
-        timestamp: new Date().toISOString(),
-        client_phone_number_id: PHONE_NUMBER_ID,
+        channel: "whatsapp+email",
+        message: adminMessage,
         user_phone: userPhone,
-        user_message: userText,
-        bot_reply: botReply,
-        lead_reason: leadReason
+        lead_reason: leadReason,
+        bot_number_id: PHONE_NUMBER_ID,
+        timestamp: new Date().toISOString()
       });
-      console.log("🚨 Admin webhook sent");
+
+      console.log("🚨 Admin alert sent (WhatsApp + Email)");
     }
 
     return res.sendStatus(200);
@@ -166,6 +192,8 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT || 10000, () =>
-  console.log("🚀 Server Live & Listening")
-);
+/* ================= SERVER ================= */
+
+app.listen(process.env.PORT || 10000, () => {
+  console.log("🚀 Server Live & Listening");
+});
