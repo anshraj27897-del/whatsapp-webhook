@@ -51,9 +51,10 @@ function getReply(text, cfg) {
   const t = text.toLowerCase().trim();
 
   if (["hi", "hello", "hey", "hii"].includes(t)) return cfg.reply_hi;
-  if (t === "1" || t.includes("price")) return cfg.reply_price;
-  if (t === "2" || t.includes("demo")) return cfg.reply_demo;
-  if (t === "3" || t.includes("help") || t.includes("support")) return cfg.reply_help;
+  if (t.includes("price") || t === "1") return cfg.reply_price;
+  if (t.includes("demo") || t === "2") return cfg.reply_demo;
+  if (t.includes("help") || t.includes("support") || t === "3")
+    return cfg.reply_help;
 
   return cfg.reply_default;
 }
@@ -76,9 +77,17 @@ app.post("/webhook", async (req, res) => {
   try {
     console.log("📩 WEBHOOK HIT");
 
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!msg?.text?.body) {
-      console.log("⚠️ No text message");
+    const msg =
+      req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+    /* ===== HARD STOP: NO REAL USER MESSAGE ===== */
+    if (
+      !msg ||
+      !msg.text ||
+      !msg.text.body ||
+      msg.text.body.trim().length < 2
+    ) {
+      console.log("⛔ No real user text → ignored");
       return res.sendStatus(200);
     }
 
@@ -89,8 +98,9 @@ app.post("/webhook", async (req, res) => {
     console.log("👤 From:", userPhone);
     console.log("💬 Message:", userText);
 
+    /* ===== DUPLICATE PROTECTION ===== */
     if (processedMessages.has(messageId)) {
-      console.log("♻️ Duplicate ignored");
+      console.log("♻️ Duplicate message ignored");
       return res.sendStatus(200);
     }
     processedMessages.add(messageId);
@@ -100,7 +110,6 @@ app.post("/webhook", async (req, res) => {
     const leadReason = getLeadReason(userText);
 
     /* ===== SEND WHATSAPP REPLY ===== */
-
     await axios.post(
       `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -119,13 +128,12 @@ app.post("/webhook", async (req, res) => {
     console.log("📤 Reply sent");
 
     /* ===== CLIENT SHEET LOG ===== */
-
     if (client.sheet_webhook) {
       await axios.post(client.sheet_webhook, {
-        timestamp: new Date().toISOString(),
         user_phone: userPhone,
         user_message: userText,
-        bot_reply: botReply
+        bot_reply: botReply,
+        lead_reason: leadReason
       });
       console.log("🧾 Client sheet logged");
     }
@@ -133,56 +141,41 @@ app.post("/webhook", async (req, res) => {
     /* ===== ADMIN SMART LOGIC ===== */
 
     let sendToAdmin = false;
-    const isGreeting = ["hi", "hello", "hey", "hii"].includes(userText.toLowerCase());
+    const isGreeting = ["hi", "hello", "hey", "hii"].includes(
+      userText.toLowerCase()
+    );
 
-    // Rule 1: First time number → once only
+    // First time number
     if (!adminLoggedNumbers.has(userPhone)) {
-      adminLoggedNumbers.add(userPhone);
       sendToAdmin = true;
+      adminLoggedNumbers.add(userPhone);
       console.log("🆕 First time number → admin alert");
     }
 
-    // Rule 2: High intent → always
+    // Pricing / Demo / Support → ALWAYS
     if (["Pricing", "Demo", "Support"].includes(leadReason)) {
       sendToAdmin = true;
       console.log("🎯 Intent alert:", leadReason);
     }
 
-    // Rule 3: Context message (non-hi, meaningful)
+    // Contextual General messages
     if (leadReason === "General" && !isGreeting && userText.length > 3) {
       sendToAdmin = true;
       console.log("🧠 Context alert");
     }
 
-    /* ===== ADMIN ALERT (WHATSAPP + EMAIL) ===== */
-
+    /* ===== SEND ADMIN ALERT ===== */
     if (sendToAdmin && ADMIN_LEADS_WEBHOOK_URL) {
-      const adminMessage = `
-🔔 NEW WHATSAPP LEAD
-
-📞 User Number: +${userPhone}
-📲 Bot Number ID: ${PHONE_NUMBER_ID}
-
-💬 User Message:
-${userText}
-
-🤖 Bot Reply:
-${botReply}
-
-🎯 Lead Type: ${leadReason}
-🕒 Time: ${new Date().toLocaleString("en-IN")}
-`;
-
       await axios.post(ADMIN_LEADS_WEBHOOK_URL, {
-        channel: "whatsapp+email",
-        message: adminMessage,
+        timestamp: new Date().toISOString(),
+        client_phone_number_id: PHONE_NUMBER_ID,
         user_phone: userPhone,
-        lead_reason: leadReason,
-        bot_number_id: PHONE_NUMBER_ID,
-        timestamp: new Date().toISOString()
+        user_message: userText,
+        bot_reply: botReply,
+        lead_reason: leadReason
       });
 
-      console.log("🚨 Admin alert sent (WhatsApp + Email)");
+      console.log("🚨 Admin alert sent");
     }
 
     return res.sendStatus(200);
@@ -192,8 +185,6 @@ ${botReply}
   }
 });
 
-/* ================= SERVER ================= */
-
-app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 Server Live & Listening");
-});
+app.listen(process.env.PORT || 10000, () =>
+  console.log("🚀 Server Live & Listening")
+);
